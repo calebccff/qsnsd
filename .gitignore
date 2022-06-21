@@ -1,0 +1,6 @@
+qsnsd
+*.o
+.vscode/
+.push.settings.jsonc
+qmi_sns.c
+qmi_sns.h

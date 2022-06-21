@@ -1,0 +1,42 @@
+package sns;
+ 
+const SNS_CLIENT_QMI_SERVICE = 400;
+ 
+const QMI_RESULT_SUCCESS = 0;
+const QMI_RESULT_FAILURE = 1;
+ 
+const QMI_ERR_NONE = 0;
+const QMI_ERR_INTERNAL = 1;
+const QMI_ERR_MALFORMED_MSG = 2;
+ 
+const SNS_CLIENT_REQ = 0x20;
+const SNS_CLIENT_RESP = 0x20;
+const SNS_CLIENT_REPORT = 0x22;
+ 
+struct qmi_result {
+	u16 result;
+	u16 error;
+};
+
+struct payload {
+	u16 data_n;
+	u8 *data;
+};
+
+request sensor_client_req {
+	required payload data = 0x1;
+	# no clue what this is...
+	# should be 1
+	required u8 some_val = 0x10;
+} = 0x20;
+
+response sensor_client_resp {
+	required qmi_result result = 0x2;
+	optional u64 client_id = 0x10;
+	optional u32 res = 0x11;
+} = 0x20;
+
+indication sensor_client_ind {
+	required u64 client_id = 0x01;
+	required payload data = 0x02;
+} = 0x22;
