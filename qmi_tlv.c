@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <errno.h>
 #include <string.h>
 #include <stdint.h>
@@ -5,46 +6,24 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "util.h"
+#include "libqrtr.h"
 
-// FIXME: use struct qmi_header when it's move to libqrtr.h
-// for now uses a slightly different format to allow accessing
-// the data
-struct qmi_packet {
-	uint8_t flags;
-	uint16_t txn_id;
-	uint16_t msg_id;
-	uint16_t msg_len;
-	uint8_t data[];
-} __attribute__((__packed__));
+#include "qmi_tlv.h"
 
-struct qmi_tlv {
-	void *allocated;
-	void *buf;
-	size_t size;
-	int error;
-};
-
-struct qmi_tlv_item {
-	uint8_t key;
-	uint16_t len;
-	uint8_t data[];
-} __attribute__((__packed__));
-
-struct qmi_tlv *qmi_tlv_init(unsigned txn, unsigned msg_id, unsigned msg_type)
+struct qmi_tlv *qmi_tlv_init(uint16_t txn, uint32_t msg_id, uint32_t msg_type)
 {
-	struct qmi_packet *pkt;
+	struct qmi_header *pkt;
 	struct qmi_tlv *tlv;
 
 	tlv = malloc(sizeof(struct qmi_tlv));
 	memset(tlv, 0, sizeof(struct qmi_tlv));
 
-	tlv->size = sizeof(struct qmi_packet);
+	tlv->size = sizeof(struct qmi_header);
 	tlv->allocated = malloc(tlv->size);
 	tlv->buf = tlv->allocated;
 
 	pkt = tlv->buf;
-	pkt->flags = msg_type;
+	pkt->type = msg_type;
 	pkt->txn_id = txn;
 	pkt->msg_id = msg_id;
 	pkt->msg_len = 0;
@@ -52,14 +31,9 @@ struct qmi_tlv *qmi_tlv_init(unsigned txn, unsigned msg_id, unsigned msg_type)
 	return tlv;
 }
 
-struct qmi_tlv *qmi_tlv_decode(void *buf, size_t len, unsigned *txn,
-			       unsigned msg_type)
+struct qmi_tlv *qmi_tlv_decode(void *buf, size_t len)
 {
-	struct qmi_packet *pkt = buf;
 	struct qmi_tlv *tlv;
-
-	if (pkt->flags != msg_type)
-		return NULL;
 
 	tlv = malloc(sizeof(struct qmi_tlv));
 	memset(tlv, 0, sizeof(struct qmi_tlv));
@@ -67,21 +41,18 @@ struct qmi_tlv *qmi_tlv_decode(void *buf, size_t len, unsigned *txn,
 	tlv->buf = buf;
 	tlv->size = len;
 
-	if (txn)
-		*txn = pkt->txn_id;
-
 	return tlv;
 }
 
 void *qmi_tlv_encode(struct qmi_tlv *tlv, size_t *len)
 {
-	struct qmi_packet *pkt;
+	struct qmi_header *pkt;
 
 	if (!tlv || tlv->error)
 		return NULL;
 
 	pkt = tlv->buf;
-	pkt->msg_len = tlv->size - sizeof(struct qmi_packet);
+	pkt->msg_len = tlv->size - sizeof(struct qmi_header);
 
 	*len = tlv->size;
 	return tlv->buf;
@@ -96,12 +67,12 @@ void qmi_tlv_free(struct qmi_tlv *tlv)
 static struct qmi_tlv_item *qmi_tlv_get_item(struct qmi_tlv *tlv, unsigned id)
 {
 	struct qmi_tlv_item *item;
-	struct qmi_packet *pkt;
+	struct qmi_header *pkt;
 	unsigned offset = 0;
 	void *pkt_data;
 
 	pkt = tlv->buf;
-	pkt_data = pkt->data;
+	pkt_data = &pkt[1];
 
 	while (offset < tlv->size) {
 		item = pkt_data + offset;
@@ -113,7 +84,7 @@ static struct qmi_tlv_item *qmi_tlv_get_item(struct qmi_tlv *tlv, unsigned id)
 	return NULL;
 }
 
-void *qmi_tlv_get(struct qmi_tlv *tlv, unsigned id, size_t *len)
+void *qmi_tlv_get(struct qmi_tlv *tlv, uint8_t id, size_t *len)
 {
 	struct qmi_tlv_item *item;
 
@@ -126,7 +97,7 @@ void *qmi_tlv_get(struct qmi_tlv *tlv, unsigned id, size_t *len)
 	return item->data;
 }
 
-void *qmi_tlv_get_array(struct qmi_tlv *tlv, unsigned id, unsigned len_size,
+void *qmi_tlv_get_array(struct qmi_tlv *tlv, uint8_t id, size_t len_size,
 			size_t *len, size_t *size)
 {
 	struct qmi_tlv_item *item;
@@ -187,7 +158,7 @@ static struct qmi_tlv_item *qmi_tlv_alloc_item(struct qmi_tlv *tlv, unsigned id,
 	return item;
 }
 
-int qmi_tlv_set(struct qmi_tlv *tlv, unsigned id, void *buf, size_t len)
+int qmi_tlv_set(struct qmi_tlv *tlv, uint8_t id, void *buf, size_t len)
 {
 	struct qmi_tlv_item *item;
 
@@ -205,7 +176,7 @@ int qmi_tlv_set(struct qmi_tlv *tlv, unsigned id, void *buf, size_t len)
 	return 0;
 }
 
-int qmi_tlv_set_array(struct qmi_tlv *tlv, unsigned id, unsigned len_size,
+int qmi_tlv_set_array(struct qmi_tlv *tlv, uint8_t id, size_t len_size,
 		      void *buf, size_t len, size_t size)
 {
 	struct qmi_tlv_item *item;
@@ -240,22 +211,17 @@ int qmi_tlv_set_array(struct qmi_tlv *tlv, unsigned id, unsigned len_size,
 	return 0;
 }
 
-void qmi_tlv_dump(struct qmi_tlv *tlv) {
-	struct qmi_tlv_item *item;
-	struct qmi_packet *pkt;
-	unsigned offset = 0;
-	void *pkt_data;
-	int i = 0;
-
-	pkt = tlv->buf;
-	pkt_data = pkt->data;
-
-	printf("<<< TLVs:\n");
-	while (offset < tlv->size - sizeof(struct qmi_packet)) {
-		item = pkt_data + offset;
-		printf("<<< TLV %d: key = 0x%2x, len = 0x%2x\n", i, item->key, item->len);
-		print_hex_dump("DATA", item->data, item->len);
-		offset += sizeof(struct qmi_tlv_item) + item->len;
-		i++;
-	}
+struct qmi_response_type_v01 *qmi_tlv_get_result(struct qmi_tlv *tlv)
+{
+	return qmi_tlv_get(tlv, 2, NULL);
 }
+
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
+#define LINE_LENGTH 40
+
+static inline uint8_t to_hex(uint8_t ch)
+{
+	ch &= 0xf;
+	return ch <= 9 ? '0' + ch : 'a' + ch - 10;
+}
+
